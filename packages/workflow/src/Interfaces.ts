@@ -14,7 +14,7 @@ import type { URLSearchParams } from 'url';
 
 import type { CODE_EXECUTION_MODES, CODE_LANGUAGES, LOG_LEVELS } from './Constants';
 import type { IDeferredPromise } from './DeferredPromise';
-import type { ExecutionCancelledError } from './errors';
+import { ApplicationError, type ExecutionCancelledError } from './errors';
 import type { ExpressionError } from './errors/expression.error';
 import type { NodeApiError } from './errors/node-api.error';
 import type { NodeOperationError } from './errors/node-operation.error';
@@ -1587,17 +1587,25 @@ export interface SupplyData {
 	closeFunction?: CloseFunction;
 }
 
-export class NodeExecutionOutput extends Array {
-	private hints: NodeExecutionHint[];
-
+export class NodeExecutionOutput extends Array<INodeExecutionData[]> {
 	constructor(data: INodeExecutionData[][], hints: NodeExecutionHint[] = []) {
 		super();
-		this.push(...data);
-		this.hints = hints;
+		// TODO: This is a temporary solution for NODE-1740, until we move away from extending native Array class
+		Object.defineProperty(data, 'getHints', {
+			value: () => hints,
+			enumerable: false,
+			writable: false,
+			configurable: false,
+		});
+		return data as NodeExecutionOutput;
 	}
 
-	public getHints(): NodeExecutionHint[] {
-		return this.hints;
+	static [Symbol.hasInstance](instance: unknown) {
+		return Array.isArray(instance) && 'getHints' in instance;
+	}
+
+	getHints(): NodeExecutionHint[] {
+		throw new ApplicationError('This should not have been called');
 	}
 }
 
@@ -2244,7 +2252,7 @@ export interface IWorkflowExecuteHooks {
 	>;
 	nodeExecuteBefore?: Array<(nodeName: string) => Promise<void>>;
 	workflowExecuteAfter?: Array<(data: IRun, newStaticData: IDataObject) => Promise<void>>;
-	workflowExecuteBefore?: Array<(workflow: Workflow, data: IRunExecutionData) => Promise<void>>;
+	workflowExecuteBefore?: Array<(workflow?: Workflow, data?: IRunExecutionData) => Promise<void>>;
 	sendResponse?: Array<(response: IExecuteResponsePromiseData) => Promise<void>>;
 }
 
@@ -2274,6 +2282,7 @@ export interface IWorkflowExecutionDataProcess {
 	 *      PARTIAL_EXECUTION_VERSION_DEFAULT
 	 */
 	partialExecutionVersion?: string;
+	dirtyNodeNames?: string[];
 }
 
 export interface ExecuteWorkflowOptions {
@@ -2371,7 +2380,8 @@ export type WorkflowExecuteMode =
 	| 'manual'
 	| 'retry'
 	| 'trigger'
-	| 'webhook';
+	| 'webhook'
+	| 'evaluation';
 
 export type WorkflowActivateMode =
 	| 'init'
@@ -2591,7 +2601,7 @@ export interface ExecutionSummary {
 	retryOf?: string | null;
 	retrySuccessId?: string | null;
 	waitTill?: Date;
-	createdAt?: Date;
+	createdAt: Date;
 	startedAt: Date;
 	stoppedAt?: Date;
 	workflowId: string;
