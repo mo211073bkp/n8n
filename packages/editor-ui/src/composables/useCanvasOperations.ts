@@ -5,6 +5,7 @@
 
 import type {
 	AddedNodesAndConnections,
+	IExecutionResponse,
 	INodeUi,
 	ITag,
 	IUsedCredential,
@@ -24,7 +25,6 @@ import { useWorkflowHelpers } from '@/composables/useWorkflowHelpers';
 import {
 	EnterpriseEditionFeature,
 	FORM_TRIGGER_NODE_TYPE,
-	QUICKSTART_NOTE_NAME,
 	STICKY_NODE_TYPE,
 	UPDATE_WEBHOOK_ID_NODE_TYPES,
 	WEBHOOK_NODE_TYPE,
@@ -90,7 +90,6 @@ import type {
 	Workflow,
 } from 'n8n-workflow';
 import { deepCopy, NodeConnectionType, NodeHelpers, TelemetryHelpers } from 'n8n-workflow';
-import { v4 as uuid } from 'uuid';
 import { computed, nextTick, ref } from 'vue';
 import type { useRouter } from 'vue-router';
 import { useClipboard } from '@/composables/useClipboard';
@@ -365,7 +364,6 @@ export function useCanvasOperations({ router }: { router: ReturnType<typeof useR
 		if (node.type === STICKY_NODE_TYPE) {
 			telemetry.track('User deleted workflow note', {
 				workflow_id: workflowsStore.workflowId,
-				is_welcome_note: node.name === QUICKSTART_NOTE_NAME,
 			});
 		} else {
 			void externalHooks.run('node.deleteNode', { node });
@@ -759,7 +757,7 @@ export function useCanvasOperations({ router }: { router: ReturnType<typeof useR
 		node: AddNodeDataWithTypeVersion,
 		nodeTypeDescription: INodeTypeDescription,
 	) {
-		const id = node.id ?? uuid();
+		const id = node.id ?? nodeHelpers.assignNodeId(node as INodeUi);
 		const name = node.name ?? (nodeTypeDescription.defaults.name as string);
 		const type = nodeTypeDescription.name;
 		const typeVersion = node.typeVersion;
@@ -1027,7 +1025,7 @@ export function useCanvasOperations({ router }: { router: ReturnType<typeof useR
 
 	function resolveNodeWebhook(node: INodeUi, nodeTypeDescription: INodeTypeDescription) {
 		if (nodeTypeDescription.webhooks?.length && !node.webhookId) {
-			node.webhookId = uuid();
+			nodeHelpers.assignWebhookId(node);
 		}
 
 		// if it's a webhook and the path is empty set the UUID as the default path
@@ -1613,7 +1611,7 @@ export function useCanvasOperations({ router }: { router: ReturnType<typeof useR
 							(n) => n.webhookId === node.webhookId,
 						);
 						if (isDuplicate) {
-							node.webhookId = uuid();
+							nodeHelpers.assignWebhookId(node);
 
 							if (node.parameters.path) {
 								node.parameters.path = node.webhookId as string;
@@ -1623,13 +1621,13 @@ export function useCanvasOperations({ router }: { router: ReturnType<typeof useR
 						}
 					}
 
-					// set all new ids when pasting/importing workflows
+					// Set all new ids when pasting/importing workflows
 					if (node.id) {
-						const newId = uuid();
-						nodeIdMap[newId] = node.id;
-						node.id = newId;
+						const previousId = node.id;
+						const newId = nodeHelpers.assignNodeId(node);
+						nodeIdMap[newId] = previousId;
 					} else {
-						node.id = uuid();
+						nodeHelpers.assignNodeId(node);
 					}
 				});
 			}
@@ -1850,6 +1848,32 @@ export function useCanvasOperations({ router }: { router: ReturnType<typeof useR
 		deleteNodes(ids);
 	}
 
+	async function openExecution(executionId: string) {
+		let data: IExecutionResponse | undefined;
+		try {
+			data = await workflowsStore.getExecution(executionId);
+		} catch (error) {
+			toast.showError(error, i18n.baseText('nodeView.showError.openExecution.title'));
+			return;
+		}
+
+		if (data === undefined) {
+			throw new Error(`Execution with id "${executionId}" could not be found!`);
+		}
+
+		initializeWorkspace(data.workflowData);
+
+		workflowsStore.setWorkflowExecutionData(data);
+
+		if (data.mode !== 'manual') {
+			workflowsStore.setWorkflowPinData({});
+		}
+
+		uiStore.stateIsDirty = false;
+
+		return data;
+	}
+
 	return {
 		lastClickPosition,
 		editableWorkflow,
@@ -1892,5 +1916,6 @@ export function useCanvasOperations({ router }: { router: ReturnType<typeof useR
 		resetWorkspace,
 		initializeWorkspace,
 		resolveNodeWebhook,
+		openExecution,
 	};
 }

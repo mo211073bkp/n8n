@@ -24,7 +24,6 @@ import {
 	MODAL_CANCEL,
 	MODAL_CONFIRM,
 	PLACEHOLDER_EMPTY_WORKFLOW_ID,
-	QUICKSTART_NOTE_NAME,
 	START_NODE_TYPE,
 	STICKY_NODE_TYPE,
 	VIEWS,
@@ -1829,7 +1828,7 @@ export default defineComponent({
 						return;
 					}
 				} else {
-					// Pasted data is is possible workflow data
+					// Pasted data is possible workflow data
 					try {
 						// Check first if it is valid JSON
 						workflowData = JSON.parse(plainTextData);
@@ -3581,7 +3580,6 @@ export default defineComponent({
 			if (node.type === STICKY_NODE_TYPE) {
 				this.$telemetry.track('User deleted workflow note', {
 					workflow_id: this.workflowsStore.workflowId,
-					is_welcome_note: node.name === QUICKSTART_NOTE_NAME,
 				});
 			} else {
 				void this.externalHooks.run('node.deleteNode', { node });
@@ -4626,11 +4624,10 @@ export default defineComponent({
 
 				<n8n-button
 					v-if="containsChatNodes"
-					label="Chat"
+					:label="isChatOpen ? i18n.baseText('chat.hide') : i18n.baseText('chat.window.title')"
 					size="large"
 					icon="comment"
-					type="primary"
-					:outline="isChatOpen === false"
+					:type="isChatOpen ? 'tertiary' : 'primary'"
 					data-test-id="workflow-chat-button"
 					@click.stop="onOpenChat"
 				/>
