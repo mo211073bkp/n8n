@@ -1,8 +1,8 @@
 <script lang="ts" setup>
 import { ref, computed, useCssModule } from 'vue';
 import type { ExecutionSummary } from 'n8n-workflow';
+import { WAIT_INDEFINITELY } from 'n8n-workflow';
 import { useI18n } from '@/composables/useI18n';
-import { WAIT_TIME_UNLIMITED } from '@/constants';
 import { convertToDisplayDate } from '@/utils/formatters/dateFormatter';
 import { i18n as locale } from '@/plugins/i18n';
 import ExecutionsTime from '@/components/executions/ExecutionsTime.vue';
@@ -25,6 +25,7 @@ const props = withDefaults(
 		selected?: boolean;
 		workflowName?: string;
 		workflowPermissions: PermissionsRecord['workflow'];
+		concurrencyCap: number;
 	}>(),
 	{
 		selected: false,
@@ -42,12 +43,16 @@ const isRunning = computed(() => {
 	return props.execution.status === 'running';
 });
 
+const isQueued = computed(() => {
+	return props.execution.status === 'new';
+});
+
 const isWaitTillIndefinite = computed(() => {
 	if (!props.execution.waitTill) {
 		return false;
 	}
 
-	return new Date(props.execution.waitTill).toISOString() === WAIT_TIME_UNLIMITED;
+	return new Date(props.execution.waitTill).getTime() === WAIT_INDEFINITELY.getTime();
 });
 
 const isRetriable = computed(() => executionHelpers.isExecutionRetriable(props.execution));
@@ -80,6 +85,12 @@ const formattedStoppedAtDate = computed(() => {
 });
 
 const statusTooltipText = computed(() => {
+	if (isQueued.value) {
+		return i18n.baseText('executionsList.statusTooltipText.waitingForConcurrencyCapacity', {
+			interpolate: { concurrencyCap: props.concurrencyCap },
+		});
+	}
+
 	if (props.execution.status === 'waiting' && isWaitTillIndefinite.value) {
 		return i18n.baseText('executionsList.statusTooltipText.theWorkflowIsWaitingIndefinitely');
 	}
@@ -178,7 +189,7 @@ async function handleActionItemClick(commandData: Command) {
 					<FontAwesomeIcon icon="spinner" spin />
 				</span>
 				<i18n-t
-					v-if="!isWaitTillIndefinite"
+					v-if="!isWaitTillIndefinite && !isQueued"
 					data-test-id="execution-status"
 					tag="span"
 					:keypath="statusTextTranslationPath"
@@ -340,7 +351,7 @@ async function handleActionItemClick(commandData: Command) {
 	}
 
 	&.new td:first-child::before {
-		background: var(--execution-card-border-new);
+		background: var(--execution-card-border-waiting);
 	}
 
 	&.running td:first-child::before {
@@ -390,8 +401,8 @@ async function handleActionItemClick(commandData: Command) {
 		font-weight: var(--font-weight-normal);
 	}
 
-	.new {
-		color: var(--color-text-dark);
+	.new & {
+		color: var(--execution-card-text-waiting);
 	}
 
 	.running & {

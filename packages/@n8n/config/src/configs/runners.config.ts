@@ -24,7 +24,7 @@ export class TaskRunnersConfig {
 	authToken: string = '';
 
 	/** IP address task runners server should listen on */
-	@Env('N8N_RUNNERS_SERVER_PORT')
+	@Env('N8N_RUNNERS_HEALTH_CHECK_SERVER_PORT')
 	port: number = 5679;
 
 	/** IP address task runners server should listen on */
@@ -42,10 +42,6 @@ export class TaskRunnersConfig {
 	/** How many concurrent tasks can a runner execute at a time */
 	@Env('N8N_RUNNERS_MAX_CONCURRENCY')
 	maxConcurrency: number = 5;
-
-	/** Should the output of deduplication be asserted for correctness */
-	@Env('N8N_RUNNERS_ASSERT_DEDUPLICATION_OUTPUT')
-	assertDeduplicationOutput: boolean = false;
 
 	/** How long (in seconds) a task is allowed to take for completion, else the task will be aborted and the runner restarted. Must be greater than 0. */
 	@Env('N8N_RUNNERS_TASK_TIMEOUT')
