@@ -468,7 +468,6 @@ describe('useWorkflowsStore', () => {
 			const expectedName = `${name}${DUPLICATE_POSTFFIX}`;
 			vi.mocked(workflowsApi).getNewWorkflow.mockResolvedValue({
 				name: expectedName,
-				onboardingFlowEnabled: false,
 				settings: {} as IWorkflowSettings,
 			});
 			const newName = await workflowsStore.getDuplicateCurrentWorkflowName(name);
@@ -618,6 +617,51 @@ describe('useWorkflowsStore', () => {
 			});
 		});
 	});
+
+	describe('setNodeValue()', () => {
+		it('should update a node', () => {
+			const nodeName = 'Edit Fields';
+			workflowsStore.addNode({
+				parameters: {},
+				id: '554c7ff4-7ee2-407c-8931-e34234c5056a',
+				name: nodeName,
+				type: 'n8n-nodes-base.set',
+				position: [680, 180],
+				typeVersion: 3.4,
+			});
+
+			expect(workflowsStore.nodeMetadata[nodeName].parametersLastUpdatedAt).toBe(undefined);
+
+			workflowsStore.setNodeValue({ name: 'Edit Fields', key: 'executeOnce', value: true });
+
+			expect(workflowsStore.workflow.nodes[0].executeOnce).toBe(true);
+			expect(workflowsStore.nodeMetadata[nodeName].parametersLastUpdatedAt).toEqual(
+				expect.any(Number),
+			);
+		});
+	});
+
+	describe('setNodePositionById()', () => {
+		it('should NOT update parametersLastUpdatedAt', () => {
+			const nodeName = 'Edit Fields';
+			const nodeId = '554c7ff4-7ee2-407c-8931-e34234c5056a';
+			workflowsStore.addNode({
+				parameters: {},
+				id: nodeId,
+				name: nodeName,
+				type: 'n8n-nodes-base.set',
+				position: [680, 180],
+				typeVersion: 3.4,
+			});
+
+			expect(workflowsStore.nodeMetadata[nodeName].parametersLastUpdatedAt).toBe(undefined);
+
+			workflowsStore.setNodePositionById(nodeId, [0, 0]);
+
+			expect(workflowsStore.workflow.nodes[0].position).toStrictEqual([0, 0]);
+			expect(workflowsStore.nodeMetadata[nodeName].parametersLastUpdatedAt).toBe(undefined);
+		});
+	});
 });
 
 function getMockEditFieldsNode() {
@@ -656,6 +700,7 @@ function generateMockExecutionEvents() {
 		finished: false,
 		mode: 'cli',
 		startedAt: new Date(),
+		createdAt: new Date(),
 		status: 'new',
 		data: {
 			resultData: {
