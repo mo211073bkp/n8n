@@ -150,7 +150,6 @@ describe('GlobalConfig', () => {
 		},
 		workflows: {
 			defaultName: 'My workflow',
-			onboardingFlowDisabled: false,
 			callerPolicyDefaultOption: 'workflowsFromSameOwner',
 		},
 		endpoints: {
@@ -231,7 +230,6 @@ describe('GlobalConfig', () => {
 			port: 5679,
 			maxOldSpaceSize: '',
 			maxConcurrency: 5,
-			assertDeduplicationOutput: false,
 			taskTimeout: 60,
 			heartbeatInterval: 30,
 		},
@@ -272,16 +270,18 @@ describe('GlobalConfig', () => {
 			blockFileAccessToN8nFiles: true,
 			daysAbandonedWorkflow: 90,
 		},
-		pruning: {
-			isEnabled: true,
-			maxAge: 336,
-			maxCount: 10_000,
-			hardDeleteBuffer: 1,
-			hardDeleteInterval: 15,
-			softDeleteInterval: 60,
+		executions: {
+			pruneData: true,
+			pruneDataMaxAge: 336,
+			pruneDataMaxCount: 10_000,
+			pruneDataHardDeleteBuffer: 1,
+			pruneDataIntervals: {
+				hardDelete: 15,
+				softDelete: 60,
+			},
 		},
 		diagnostics: {
-			enabled: false,
+			enabled: true,
 			frontendConfig: '1zPn9bgWPzlQc0p8Gj1uiK6DOTn;https://telemetry.n8n.io',
 			backendConfig: '1zPn7YoGC3ZXE9zLeTKLuQCB4F6;https://telemetry.n8n.io',
 			posthogConfig: {

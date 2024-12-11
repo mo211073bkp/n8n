@@ -9,8 +9,7 @@ import { parse as parseUrl } from 'node:url';
 import { Service } from 'typedi';
 import { Server as WSServer } from 'ws';
 
-import { inTest, LOWEST_SHUTDOWN_PRIORITY } from '@/constants';
-import { OnShutdown } from '@/decorators/on-shutdown';
+import { inTest } from '@/constants';
 import { Logger } from '@/logging/logger.service';
 import { bodyParser, rawBodyReader } from '@/middlewares';
 import { send } from '@/response-helper';
@@ -69,16 +68,22 @@ export class TaskRunnerServer {
 		this.configureRoutes();
 	}
 
-	@OnShutdown(LOWEST_SHUTDOWN_PRIORITY)
 	async stop(): Promise<void> {
 		if (this.wsServer) {
 			this.wsServer.close();
 			this.wsServer = undefined;
 		}
-		if (this.server) {
-			await new Promise<void>((resolve) => this.server?.close(() => resolve()));
-			this.server = undefined;
-		}
+
+		const stopHttpServerTask = (async () => {
+			if (this.server) {
+				await new Promise<void>((resolve) => this.server?.close(() => resolve()));
+				this.server = undefined;
+			}
+		})();
+
+		const stopWsServerTask = this.taskRunnerWsServer.stop();
+
+		await Promise.all([stopHttpServerTask, stopWsServerTask]);
 	}
 
 	/** Creates an HTTP server and listens to the configured port */
@@ -119,6 +124,8 @@ export class TaskRunnerServer {
 			maxPayload: this.globalConfig.taskRunners.maxPayload,
 		});
 		this.server.on('upgrade', this.handleUpgradeRequest);
+
+		this.taskRunnerWsServer.start();
 	}
 
 	private async setupErrorHandlers() {
@@ -126,11 +133,8 @@ export class TaskRunnerServer {
 
 		// Augment errors sent to Sentry
 		if (this.globalConfig.sentry.backendDsn) {
-			const {
-				Handlers: { requestHandler, errorHandler },
-			} = await import('@sentry/node');
-			app.use(requestHandler());
-			app.use(errorHandler());
+			const { setupExpressErrorHandler } = await import('@sentry/node');
+			setupExpressErrorHandler(app);
 		}
 	}
 
@@ -156,6 +160,8 @@ export class TaskRunnerServer {
 			authEndpoint,
 			send(async (req) => await this.taskRunnerAuthController.createGrantToken(req)),
 		);
+
+		this.app.get('/healthz', (_, res) => res.send({ status: 'ok' }));
 	}
 
 	private handleUpgradeRequest = (

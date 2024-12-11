@@ -33,7 +33,7 @@ function getOutputParserSchema(outputParser: N8nOutputParser): ZodObject<any, an
 }
 
 async function extractBinaryMessages(ctx: IExecuteFunctions) {
-	const binaryData = ctx.getInputData(0, 'main')?.[0]?.binary ?? {};
+	const binaryData = ctx.getInputData()?.[0]?.binary ?? {};
 	const binaryMessages = await Promise.all(
 		Object.values(binaryData)
 			.filter((data) => data.mimeType.startsWith('image/'))
@@ -258,14 +258,16 @@ export async function toolsAgentExecute(this: IExecuteFunctions): Promise<INodeE
 		['system', `{system_message}${outputParser ? '\n\n{formatting_instructions}' : ''}`],
 		['placeholder', '{chat_history}'],
 		['human', '{input}'],
-		['placeholder', '{agent_scratchpad}'],
 	];
 
-	const hasBinaryData = this.getInputData(0, 'main')?.[0]?.binary !== undefined;
+	const hasBinaryData = this.getInputData()?.[0]?.binary !== undefined;
 	if (hasBinaryData && passthroughBinaryImages) {
 		const binaryMessage = await extractBinaryMessages(this);
 		messages.push(binaryMessage);
 	}
+	// We add the agent scratchpad last, so that the agent will not run in loops
+	// by adding binary messages between each interaction
+	messages.push(['placeholder', '{agent_scratchpad}']);
 	const prompt = ChatPromptTemplate.fromMessages(messages);
 
 	const agent = createToolCallingAgent({

@@ -7,7 +7,6 @@ import type {
 	NodeTypeAndVersion,
 } from 'n8n-workflow';
 import {
-	WAIT_TIME_UNLIMITED,
 	Node,
 	updateDisplayOptions,
 	NodeOperationError,
@@ -16,10 +15,12 @@ import {
 	tryToParseJsonToFormFields,
 	NodeConnectionType,
 	WAIT_NODE_TYPE,
+	WAIT_INDEFINITELY,
 } from 'n8n-workflow';
 
 import { formDescription, formFields, formTitle } from '../Form/common.descriptions';
 import { prepareFormReturnItem, renderForm, resolveRawData } from '../Form/utils';
+import { type CompletionPageConfig } from './interfaces';
 
 const pageProperties = updateDisplayOptions(
 	{
@@ -266,23 +267,20 @@ export class Form extends Node {
 
 		const method = context.getRequestObject().method;
 
-		if (operation === 'completion') {
-			const respondWith = context.getNodeParameter('respondWith', '') as string;
+		if (operation === 'completion' && method === 'GET') {
+			const staticData = context.getWorkflowStaticData('node');
+			const id = `${context.getExecutionId()}-${context.getNode().name}`;
+			const config = staticData?.[id] as CompletionPageConfig;
+			delete staticData[id];
 
-			if (respondWith === 'redirect') {
-				const redirectUrl = context.getNodeParameter('redirectUrl', '') as string;
-				res.redirect(redirectUrl);
-				return {
-					noWebhookResponse: true,
-				};
+			if (config.redirectUrl) {
+				res.send(
+					`<html><head><meta http-equiv="refresh" content="0; url=${config.redirectUrl}"></head></html>`,
+				);
+				return { noWebhookResponse: true };
 			}
 
-			const completionTitle = context.getNodeParameter('completionTitle', '') as string;
-			const completionMessage = context.getNodeParameter('completionMessage', '') as string;
-			const options = context.getNodeParameter('options', {}) as {
-				formTitle: string;
-			};
-			let title = options.formTitle;
+			let title = config.pageTitle;
 			if (!title) {
 				title = context.evaluateExpression(
 					`{{ $('${trigger?.name}').params.formTitle }}`,
@@ -293,14 +291,18 @@ export class Form extends Node {
 			) as boolean;
 
 			res.render('form-trigger-completion', {
-				title: completionTitle,
-				message: completionMessage,
+				title: config.completionTitle,
+				message: config.completionMessage,
 				formTitle: title,
 				appendAttribution,
 			});
 
+			return { noWebhookResponse: true };
+		}
+
+		if (operation === 'completion' && method === 'POST') {
 			return {
-				noWebhookResponse: true,
+				workflowData: [context.evaluateExpression('{{ $input.all() }}') as INodeExecutionData[]],
 			};
 		}
 
@@ -340,7 +342,7 @@ export class Form extends Node {
 			const connectedNodes = context.getChildNodes(context.getNode().name);
 
 			const hasNextPage = connectedNodes.some(
-				(node) => node.type === FORM_NODE_TYPE || node.type === WAIT_NODE_TYPE,
+				(node) => !node.disabled && (node.type === FORM_NODE_TYPE || node.type === WAIT_NODE_TYPE),
 			);
 
 			if (hasNextPage) {
@@ -413,7 +415,25 @@ export class Form extends Node {
 		}
 
 		if (operation !== 'completion') {
-			const waitTill = new Date(WAIT_TIME_UNLIMITED);
+			await context.putExecutionToWait(WAIT_INDEFINITELY);
+		} else {
+			const staticData = context.getWorkflowStaticData('node');
+			const completionTitle = context.getNodeParameter('completionTitle', 0, '') as string;
+			const completionMessage = context.getNodeParameter('completionMessage', 0, '') as string;
+			const redirectUrl = context.getNodeParameter('redirectUrl', 0, '') as string;
+			const options = context.getNodeParameter('options', 0, {}) as { formTitle: string };
+			const id = `${context.getExecutionId()}-${context.getNode().name}`;
+
+			const config: CompletionPageConfig = {
+				completionTitle,
+				completionMessage,
+				redirectUrl,
+				pageTitle: options.formTitle,
+			};
+
+			staticData[id] = config;
+
+			const waitTill = new Date(WAIT_INDEFINITELY);
 			await context.putExecutionToWait(waitTill);
 		}
 
