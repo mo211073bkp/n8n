@@ -6,15 +6,8 @@ import type {
 	CanvasEventBusEvents,
 	ConnectStartEvent,
 } from '@/types';
-import type {
-	Connection,
-	XYPosition,
-	ViewportTransform,
-	NodeDragEvent,
-	GraphNode,
-} from '@vue-flow/core';
+import type { Connection, XYPosition, NodeDragEvent, GraphNode } from '@vue-flow/core';
 import { useVueFlow, VueFlow, PanelPosition, MarkerType } from '@vue-flow/core';
-import { Background } from '@vue-flow/background';
 import { MiniMap } from '@vue-flow/minimap';
 import Node from './elements/nodes/CanvasNode.vue';
 import Edge from './elements/edges/CanvasEdge.vue';
@@ -29,10 +22,11 @@ import type { PinDataSource } from '@/composables/usePinnedData';
 import { isPresent } from '@/utils/typesUtils';
 import { GRID_SIZE } from '@/utils/nodeViewUtils';
 import { CanvasKey } from '@/constants';
-import { onKeyDown, onKeyUp } from '@vueuse/core';
+import { onKeyDown, onKeyUp, useThrottleFn } from '@vueuse/core';
 import CanvasArrowHeadMarker from './elements/edges/CanvasArrowHeadMarker.vue';
-import CanvasBackgroundStripedPattern from './elements/CanvasBackgroundStripedPattern.vue';
+import CanvasBackground from './elements/background/CanvasBackground.vue';
 import { useCanvasTraversal } from '@/composables/useCanvasTraversal';
+import { NodeConnectionType } from 'n8n-workflow';
 
 const $style = useCssModule();
 
@@ -45,6 +39,8 @@ const emit = defineEmits<{
 	'update:node:selected': [id: string];
 	'update:node:name': [id: string];
 	'update:node:parameters': [id: string, parameters: Record<string, unknown>];
+	'update:node:inputs': [id: string];
+	'update:node:outputs': [id: string];
 	'click:node:add': [id: string, handle: string];
 	'run:node': [id: string];
 	'delete:node': [id: string];
@@ -70,6 +66,7 @@ const emit = defineEmits<{
 	'run:workflow': [];
 	'save:workflow': [];
 	'create:workflow': [];
+	'drag-and-drop': [position: XYPosition, event: DragEvent];
 }>();
 
 const props = withDefaults(
@@ -113,8 +110,14 @@ const {
 	project,
 	nodes: graphNodes,
 	onPaneReady,
+	onNodesInitialized,
 	findNode,
 	viewport,
+	onEdgeMouseLeave,
+	onEdgeMouseEnter,
+	onEdgeMouseMove,
+	onNodeMouseEnter,
+	onNodeMouseLeave,
 } = vueFlow;
 const {
 	getIncomingNodes,
@@ -146,10 +149,12 @@ const selectionKeyCode = ref<true | null>(true);
 
 onKeyDown(panningKeyCode.value, () => {
 	selectionKeyCode.value = null;
+	panningMouseButton.value = [0, 1];
 });
 
 onKeyUp(panningKeyCode.value, () => {
 	selectionKeyCode.value = true;
+	panningMouseButton.value = [1];
 });
 
 function selectLeftNode(id: string) {
@@ -204,8 +209,8 @@ const keyMap = computed(() => ({
 	ctrl_c: emitWithSelectedNodes((ids) => emit('copy:nodes', ids)),
 	enter: emitWithLastSelectedNode((id) => onSetNodeActive(id)),
 	ctrl_a: () => addSelectedNodes(graphNodes.value),
-	'+|=': async () => await onZoomIn(),
-	'-|_': async () => await onZoomOut(),
+	'shift_+|+|=': async () => await onZoomIn(),
+	'shift+_|-|_': async () => await onZoomOut(),
 	0: async () => await onResetZoom(),
 	1: async () => await onFitView(),
 	ArrowUp: emitWithLastSelectedNode(selectUpperSiblingNode),
@@ -214,7 +219,6 @@ const keyMap = computed(() => ({
 	ArrowRight: emitWithLastSelectedNode(selectRightNode),
 	shift_ArrowLeft: emitWithLastSelectedNode(selectUpstreamNodes),
 	shift_ArrowRight: emitWithLastSelectedNode(selectDownstreamNodes),
-	// @TODO implement arrow key shortcuts to modify selection
 
 	...(props.readOnly
 		? {}
@@ -265,6 +269,10 @@ function onNodeDragStop(event: NodeDragEvent) {
 	onUpdateNodesPosition(event.nodes.map(({ id, position }) => ({ id, position })));
 }
 
+function onSelectionDragStop(event: NodeDragEvent) {
+	onUpdateNodesPosition(event.nodes.map(({ id, position }) => ({ id, position })));
+}
+
 function onSetNodeActive(id: string) {
 	props.eventBus.emit('nodes:action', { ids: [id], action: 'update:node:active' });
 	emit('update:node:active', id);
@@ -296,8 +304,16 @@ function onUpdateNodeParameters(id: string, parameters: Record<string, unknown>)
 	emit('update:node:parameters', id, parameters);
 }
 
+function onUpdateNodeInputs(id: string) {
+	emit('update:node:inputs', id);
+}
+
+function onUpdateNodeOutputs(id: string) {
+	emit('update:node:outputs', id);
+}
+
 /**
- * Connections
+ * Connections / Edges
  */
 
 const connectionCreated = ref(false);
@@ -340,6 +356,57 @@ function onClickConnectionAdd(connection: Connection) {
 const arrowHeadMarkerId = ref('custom-arrow-head');
 
 /**
+ * Edge and Nodes Hovering
+ */
+
+const edgesHoveredById = ref<Record<string, boolean>>({});
+const edgesBringToFrontById = ref<Record<string, boolean>>({});
+
+onEdgeMouseEnter(({ edge }) => {
+	edgesBringToFrontById.value = { [edge.id]: true };
+	edgesHoveredById.value = { [edge.id]: true };
+});
+
+onEdgeMouseMove(
+	useThrottleFn(({ edge, event }) => {
+		const type = edge.data.source.type;
+		if (type !== NodeConnectionType.AiTool) {
+			return;
+		}
+
+		if (!edge.data.maxConnections || edge.data.maxConnections > 1) {
+			const projectedPosition = getProjectedPosition(event);
+			const yDiff = projectedPosition.y - edge.targetY;
+			if (yDiff < 4 * GRID_SIZE) {
+				edgesBringToFrontById.value = { [edge.id]: false };
+			} else {
+				edgesBringToFrontById.value = { [edge.id]: true };
+			}
+		}
+	}, 100),
+);
+
+onEdgeMouseLeave(({ edge }) => {
+	edgesBringToFrontById.value = { [edge.id]: false };
+	edgesHoveredById.value = { [edge.id]: false };
+});
+
+function onUpdateEdgeLabelHovered(id: string, hovered: boolean) {
+	edgesBringToFrontById.value = { [id]: true };
+	edgesHoveredById.value[id] = hovered;
+}
+
+const nodesHoveredById = ref<Record<string, boolean>>({});
+
+onNodeMouseEnter(({ node }) => {
+	nodesHoveredById.value = { [node.id]: true };
+});
+
+onNodeMouseLeave(({ node }) => {
+	nodesHoveredById.value = { [node.id]: false };
+});
+
+/**
  * Executions
  */
 
@@ -372,10 +439,9 @@ function emitWithLastSelectedNode(emitFn: (id: string) => void) {
  */
 
 const defaultZoom = 1;
-const zoom = ref(defaultZoom);
 const isPaneMoving = ref(false);
 
-function getProjectedPosition(event?: MouseEvent) {
+function getProjectedPosition(event?: Pick<MouseEvent, 'clientX' | 'clientY'>) {
 	const bounds = viewportRef.value?.getBoundingClientRect() ?? { left: 0, top: 0 };
 	const offsetX = event?.clientX ?? 0;
 	const offsetY = event?.clientY ?? 0;
@@ -408,10 +474,6 @@ async function onZoomOut() {
 
 async function onResetZoom() {
 	await onZoomTo(defaultZoom);
-}
-
-function onViewportChange(viewport: ViewportTransform) {
-	zoom.value = viewport.zoom;
 }
 
 function setReadonly(value: boolean) {
@@ -484,6 +546,20 @@ function onContextMenuAction(action: ContextMenuAction, nodeIds: string[]) {
 }
 
 /**
+ * Drag and drop
+ */
+
+function onDragOver(event: DragEvent) {
+	event.preventDefault();
+}
+
+function onDrop(event: DragEvent) {
+	const position = getProjectedPosition(event);
+
+	emit('drag-and-drop', position, event);
+}
+
+/**
  * Minimap
  */
 
@@ -530,6 +606,8 @@ function onMinimapMouseLeave() {
  * Lifecycle
  */
 
+const initialized = ref(false);
+
 onMounted(() => {
 	props.eventBus.on('fitView', onFitView);
 	props.eventBus.on('nodes:select', onSelectNodes);
@@ -545,6 +623,10 @@ onPaneReady(async () => {
 	isPaneReady.value = true;
 });
 
+onNodesInitialized(() => {
+	initialized.value = true;
+});
+
 watch(() => props.readOnly, setReadonly, {
 	immediate: true,
 });
@@ -558,6 +640,8 @@ const isExecuting = toRef(props, 'executing');
 provide(CanvasKey, {
 	connectingHandle,
 	isExecuting,
+	initialized,
+	viewport,
 });
 </script>
 
@@ -566,6 +650,7 @@ provide(CanvasKey, {
 		:id="id"
 		:nodes="nodes"
 		:edges="connections"
+		:class="classes"
 		:apply-changes="false"
 		:connection-line-options="{ markerEnd: MarkerType.ArrowClosed }"
 		:connection-radius="60"
@@ -575,7 +660,6 @@ provide(CanvasKey, {
 		:snap-grid="[GRID_SIZE, GRID_SIZE]"
 		:min-zoom="0"
 		:max-zoom="4"
-		:class="classes"
 		:selection-key-code="selectionKeyCode"
 		:pan-activation-key-code="panningKeyCode"
 		:disable-keyboard-a11y="true"
@@ -584,17 +668,20 @@ provide(CanvasKey, {
 		@connect="onConnect"
 		@connect-end="onConnectEnd"
 		@pane-click="onClickPane"
-		@contextmenu="onOpenContextMenu"
-		@viewport-change="onViewportChange"
+		@pane-context-menu="onOpenContextMenu"
 		@move-start="onPaneMoveStart"
 		@move-end="onPaneMoveEnd"
 		@node-drag-stop="onNodeDragStop"
+		@selection-drag-stop="onSelectionDragStop"
+		@dragover="onDragOver"
+		@drop="onDrop"
 	>
-		<template #node-canvas-node="canvasNodeProps">
+		<template #node-canvas-node="nodeProps">
 			<Node
-				v-bind="canvasNodeProps"
+				v-bind="nodeProps"
 				:read-only="readOnly"
 				:event-bus="eventBus"
+				:hovered="nodesHoveredById[nodeProps.id]"
 				@delete="onDeleteNode"
 				@run="onRunNode"
 				@select="onSelectNode"
@@ -602,18 +689,23 @@ provide(CanvasKey, {
 				@activate="onSetNodeActive"
 				@open:contextmenu="onOpenNodeContextMenu"
 				@update="onUpdateNodeParameters"
+				@update:inputs="onUpdateNodeInputs"
+				@update:outputs="onUpdateNodeOutputs"
 				@move="onUpdateNodePosition"
 				@add="onClickNodeAdd"
 			/>
 		</template>
 
-		<template #edge-canvas-edge="canvasEdgeProps">
+		<template #edge-canvas-edge="edgeProps">
 			<Edge
-				v-bind="canvasEdgeProps"
+				v-bind="edgeProps"
 				:marker-end="`url(#${arrowHeadMarkerId})`"
 				:read-only="readOnly"
+				:hovered="edgesHoveredById[edgeProps.id]"
+				:bring-to-front="edgesBringToFrontById[edgeProps.id]"
 				@add="onClickConnectionAdd"
 				@delete="onDeleteConnection"
+				@update:label:hovered="onUpdateEdgeLabelHovered(edgeProps.id, $event)"
 			/>
 		</template>
 
@@ -623,11 +715,7 @@ provide(CanvasKey, {
 
 		<CanvasArrowHeadMarker :id="arrowHeadMarkerId" />
 
-		<Background data-test-id="canvas-background" pattern-color="#aaa" :gap="GRID_SIZE">
-			<template v-if="readOnly" #pattern-container>
-				<CanvasBackgroundStripedPattern :x="viewport.x" :y="viewport.y" :zoom="viewport.zoom" />
-			</template>
-		</Background>
+		<CanvasBackground :viewport="viewport" :striped="readOnly" />
 
 		<Transition name="minimap">
 			<MiniMap
@@ -652,7 +740,7 @@ provide(CanvasKey, {
 			:position="controlsPosition"
 			:show-interactive="false"
 			:show-bug-reporting-button="showBugReportingButton"
-			:zoom="zoom"
+			:zoom="viewport.zoom"
 			@zoom-to-fit="onFitView"
 			@zoom-in="onZoomIn"
 			@zoom-out="onZoomOut"
@@ -667,7 +755,10 @@ provide(CanvasKey, {
 
 <style lang="scss" module>
 .canvas {
+	width: 100%;
+	height: 100%;
 	opacity: 0;
+	transition: opacity 300ms ease;
 
 	&.ready {
 		opacity: 1;

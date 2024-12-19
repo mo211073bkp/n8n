@@ -82,24 +82,22 @@ export const executionFilterToQueryFilter = (
 	return queryFilter;
 };
 
-export const openPopUpWindow = (
-	url: string,
-	options?: { width?: number; height?: number; alwaysInNewTab?: boolean },
-) => {
-	const windowWidth = window.innerWidth;
-	const smallScreen = windowWidth <= 800;
-	if (options?.alwaysInNewTab || smallScreen) {
-		return window.open(url, '_blank');
-	} else {
-		const height = options?.width || 700;
-		const width = options?.height || window.innerHeight - 50;
+let formPopupWindow: boolean = false;
+
+export const openFormPopupWindow = (url: string) => {
+	if (!formPopupWindow) {
+		const height = 700;
+		const width = window.innerHeight - 50;
 		const left = (window.innerWidth - height) / 2;
 		const top = 50;
 		const features = `width=${height},height=${width},left=${left},top=${top},resizable=yes,scrollbars=yes`;
 		const windowName = `form-waiting-since-${Date.now()}`;
-		return window.open(url, windowName, features);
+		window.open(url, windowName, features);
+		formPopupWindow = true;
 	}
 };
+
+export const clearPopupWindowState = () => (formPopupWindow = false);
 
 export function displayForm({
 	nodes,
@@ -131,7 +129,7 @@ export function displayForm({
 		if (node.name === destinationNode || !node.disabled) {
 			let testUrl = '';
 			if (node.type === FORM_TRIGGER_NODE_TYPE) testUrl = getTestUrl(node);
-			if (testUrl && source !== 'RunData.ManualChatMessage') openPopUpWindow(testUrl);
+			if (testUrl && source !== 'RunData.ManualChatMessage') openFormPopupWindow(testUrl);
 		}
 	}
 }

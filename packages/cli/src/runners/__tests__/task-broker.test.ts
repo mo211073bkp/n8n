@@ -6,6 +6,7 @@ import { ApplicationError, type INodeTypeBaseDescription } from 'n8n-workflow';
 import { Time } from '@/constants';
 
 import { TaskRejectError } from '../errors';
+import { TaskRunnerTimeoutError } from '../errors/task-runner-timeout.error';
 import type { RunnerLifecycleEvents } from '../runner-lifecycle-events';
 import { TaskBroker } from '../task-broker.service';
 import type { TaskOffer, TaskRequest, TaskRunner } from '../task-broker.service';
@@ -54,6 +55,35 @@ describe('TaskBroker', () => {
 
 			expect(offers).toHaveLength(1);
 			expect(offers[0]).toEqual(validOffer);
+		});
+
+		it('should not expire non-expiring task offers', () => {
+			const nonExpiringOffer: TaskOffer = {
+				offerId: 'nonExpiring',
+				runnerId: 'runner1',
+				taskType: 'taskType1',
+				validFor: -1,
+				validUntil: 0n, // sentinel value for non-expiring offer
+			};
+
+			const expiredOffer: TaskOffer = {
+				offerId: 'expired',
+				runnerId: 'runner2',
+				taskType: 'taskType1',
+				validFor: 1000,
+				validUntil: createValidUntil(-1000), // 1 second in the past
+			};
+
+			taskBroker.setPendingTaskOffers([
+				nonExpiringOffer, // will not be removed
+				expiredOffer, // will be removed
+			]);
+
+			taskBroker.expireTasks();
+
+			const offers = taskBroker.getPendingTaskOffers();
+			expect(offers).toHaveLength(1);
+			expect(offers[0]).toEqual(nonExpiringOffer);
 		});
 	});
 
@@ -495,7 +525,9 @@ describe('TaskBroker', () => {
 			const requestParams: RunnerMessage.ToBroker.TaskDataRequest['requestParams'] = {
 				dataOfNodes: 'all',
 				env: true,
-				input: true,
+				input: {
+					include: true,
+				},
 				prevNode: true,
 			};
 
@@ -595,6 +627,66 @@ describe('TaskBroker', () => {
 				requestParams,
 			});
 		});
+
+		it('should handle `runner:taskoffer` message with expiring offer', async () => {
+			const runnerId = 'runner1';
+			const validFor = 1000; // 1 second
+			const message: RunnerMessage.ToBroker.TaskOffer = {
+				type: 'runner:taskoffer',
+				offerId: 'offer1',
+				taskType: 'taskType1',
+				validFor,
+			};
+
+			const beforeTime = process.hrtime.bigint();
+			taskBroker.registerRunner(mock<TaskRunner>({ id: runnerId }), jest.fn());
+
+			await taskBroker.onRunnerMessage(runnerId, message);
+
+			const afterTime = process.hrtime.bigint();
+
+			const offers = taskBroker.getPendingTaskOffers();
+			expect(offers).toHaveLength(1);
+
+			const expectedMinValidUntil = beforeTime + BigInt(validFor * 1_000_000);
+			const expectedMaxValidUntil = afterTime + BigInt(validFor * 1_000_000);
+
+			expect(offers[0].validUntil).toBeGreaterThanOrEqual(expectedMinValidUntil);
+			expect(offers[0].validUntil).toBeLessThanOrEqual(expectedMaxValidUntil);
+			expect(offers[0]).toEqual(
+				expect.objectContaining({
+					runnerId,
+					taskType: message.taskType,
+					offerId: message.offerId,
+					validFor,
+				}),
+			);
+		});
+
+		it('should handle `runner:taskoffer` message with non-expiring offer', async () => {
+			const runnerId = 'runner1';
+			const message: RunnerMessage.ToBroker.TaskOffer = {
+				type: 'runner:taskoffer',
+				offerId: 'offer1',
+				taskType: 'taskType1',
+				validFor: -1,
+			};
+
+			taskBroker.registerRunner(mock<TaskRunner>({ id: runnerId }), jest.fn());
+
+			await taskBroker.onRunnerMessage(runnerId, message);
+
+			const offers = taskBroker.getPendingTaskOffers();
+
+			expect(offers).toHaveLength(1);
+			expect(offers[0]).toEqual({
+				runnerId,
+				taskType: message.taskType,
+				offerId: message.offerId,
+				validFor: -1,
+				validUntil: 0n,
+			});
+		});
 	});
 
 	describe('onRequesterMessage', () => {
@@ -630,7 +722,7 @@ describe('TaskBroker', () => {
 
 		beforeAll(() => {
 			jest.useFakeTimers();
-			config = mock<TaskRunnersConfig>({ taskTimeout: 30 });
+			config = mock<TaskRunnersConfig>({ taskTimeout: 30, mode: 'internal' });
 			taskBroker = new TaskBroker(mock(), config, runnerLifecycleEvents);
 		});
 
@@ -709,7 +801,7 @@ describe('TaskBroker', () => {
 			expect(taskBroker.getTasks().get(taskId)).toBeUndefined();
 		});
 
-		it('on timeout, we should emit `runner:timed-out-during-task` event and send error to requester', async () => {
+		it('[internal mode] on timeout, we should emit `runner:timed-out-during-task` event and send error to requester', async () => {
 			jest.spyOn(global, 'clearTimeout');
 
 			const taskId = 'task1';
@@ -746,6 +838,51 @@ describe('TaskBroker', () => {
 
 			await Promise.resolve();
 
+			expect(taskBroker.getTasks().get(taskId)).toBeUndefined();
+		});
+
+		it('[external mode] on timeout, we should instruct the runner to cancel and send error to requester', async () => {
+			const config = mock<TaskRunnersConfig>({ taskTimeout: 30, mode: 'external' });
+			taskBroker = new TaskBroker(mock(), config, runnerLifecycleEvents);
+
+			jest.spyOn(global, 'clearTimeout');
+
+			const taskId = 'task1';
+			const runnerId = 'runner1';
+			const requesterId = 'requester1';
+			const runner = mock<TaskRunner>({ id: runnerId });
+			const runnerCallback = jest.fn();
+			const requesterCallback = jest.fn();
+
+			taskBroker.registerRunner(runner, runnerCallback);
+			taskBroker.registerRequester(requesterId, requesterCallback);
+
+			taskBroker.setTasks({
+				[taskId]: { id: taskId, runnerId, requesterId, taskType: 'test' },
+			});
+
+			await taskBroker.sendTaskSettings(taskId, {});
+			runnerCallback.mockClear();
+
+			jest.runAllTimers();
+
+			await Promise.resolve(); // for timeout callback
+			await Promise.resolve(); // for sending messages to runner and requester
+			await Promise.resolve(); // for task cleanup and removal
+
+			expect(runnerCallback).toHaveBeenLastCalledWith({
+				type: 'broker:taskcancel',
+				taskId,
+				reason: 'Task execution timed out',
+			});
+
+			expect(requesterCallback).toHaveBeenCalledWith({
+				type: 'broker:taskerror',
+				taskId,
+				error: expect.any(TaskRunnerTimeoutError),
+			});
+
+			expect(clearTimeout).toHaveBeenCalled();
 			expect(taskBroker.getTasks().get(taskId)).toBeUndefined();
 		});
 	});
